@@ -1,0 +1,84 @@
+name: Build Apollo V-HID Host
+
+on:
+  push:
+    branches:
+      - apollo-vhid-ci
+    paths:
+      - 'src/config.h'
+      - 'src/config.cpp'
+      - 'src/platform/windows/input.cpp'
+      - 'src/platform/windows/virtual_hid.h'
+      - '.github/workflows/apollo-vhid-host-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2025
+
+    steps:
+      - name: Checkout with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-boost
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-cppwinrt
+            mingw-w64-ucrt-x86_64-curl-winssl
+            mingw-w64-ucrt-x86_64-MinHook
+            mingw-w64-ucrt-x86_64-miniupnpc
+            mingw-w64-ucrt-x86_64-onevpl
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-toolchain
+            mingw-w64-ucrt-x86_64-nlohmann_json
+            mingw-w64-ucrt-x86_64-ninja
+
+      - name: Configure Apollo
+        shell: msys2 {0}
+        run: |
+          node --version
+          npm --version
+          cmake --version
+          gcc --version
+          cmake -B build -G Ninja -S . -DBUILD_TESTS=OFF -DBUILD_DOCS=OFF
+
+      - name: Build Apollo
+        shell: msys2 {0}
+        run: cmake --build build --parallel 2
+
+      - name: Collect Windows binaries
+        if: success()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .\artifact | Out-Null
+          Get-ChildItem .\build -Recurse -File -Filter *.exe |
+            Where-Object { $_.FullName -notmatch '\\_deps\\' -and $_.FullName -notmatch '\\CMakeFiles\\' } |
+            Copy-Item -Destination .\artifact -Force
+          Get-ChildItem .\artifact -Force
+
+      - name: Upload Apollo host artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Apollo-VHID-Host-Windows-x64
+          path: artifact/
+          if-no-files-found: error
