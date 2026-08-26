@@ -1,6 +1,6 @@
 /**
  * @file src/platform/windows/virtual_hid.h
- * @brief Optional Apollo keyboard/mouse bridge to the ApolloVhid VHF driver.
+ * @brief Optional Apollo keyboard/mouse bridge using VIIPER first, then ApolloVhid VHF.
  */
 #pragma once
 
@@ -9,14 +9,15 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
-#include <limits>
 #include <iterator>
+#include <limits>
 #include <mutex>
+
+#include "viiper_hid.h"
 
 namespace platf {
   namespace apollo_vhid {
     constexpr wchar_t DEVICE_PATH[] = L"\\\\.\\ApolloVhid";
-
     constexpr DWORD IOCTL_KEYBOARD = CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_WRITE_DATA);
     constexpr DWORD IOCTL_MOUSE = CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_WRITE_DATA);
 
@@ -26,7 +27,6 @@ namespace platf {
       std::uint8_t reserved;
       std::uint8_t keys[6];
     };
-
     struct mouse_report_t {
       std::uint8_t buttons;
       std::int16_t x;
@@ -42,28 +42,23 @@ namespace platf {
     virtual_hid_t() = default;
     virtual_hid_t(const virtual_hid_t &) = delete;
     virtual_hid_t &operator=(const virtual_hid_t &) = delete;
-
-    ~virtual_hid_t() {
-      close();
-    }
+    ~virtual_hid_t() { close(); }
 
     bool open() {
       std::scoped_lock lock(mutex_);
-      if (handle_ != INVALID_HANDLE_VALUE) {
+      if (backend_ != backend_t::none) return true;
+      if (viiper_.open()) {
+        backend_ = backend_t::viiper;
         return true;
       }
-
-      handle_ = CreateFileW(
-        apollo_vhid::DEVICE_PATH,
-        GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        nullptr,
-        OPEN_EXISTING,
-        FILE_ATTRIBUTE_NORMAL,
-        nullptr
-      );
-
-      return handle_ != INVALID_HANDLE_VALUE;
+      handle_ = CreateFileW(apollo_vhid::DEVICE_PATH, GENERIC_READ | GENERIC_WRITE,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+      if (handle_ != INVALID_HANDLE_VALUE) {
+        backend_ = backend_t::apollo_vhid;
+        return true;
+      }
+      return false;
     }
 
     void close() {
@@ -73,83 +68,74 @@ namespace platf {
 
     bool keyboard(std::uint16_t modcode, bool release) {
       const auto usage = vk_to_hid_usage(static_cast<std::uint8_t>(modcode & 0xFF));
-      if (usage == 0) {
-        return false;
-      }
+      if (usage == 0) return false;
 
       std::scoped_lock lock(mutex_);
-      if (handle_ == INVALID_HANDLE_VALUE) {
+      if (backend_ == backend_t::viiper) {
+        if (viiper_.keyboard_usage(usage, release)) return true;
+        backend_ = backend_t::none;
         return false;
       }
+      if (backend_ != backend_t::apollo_vhid || handle_ == INVALID_HANDLE_VALUE) return false;
 
       const bool old_state = pressed_[usage];
       pressed_[usage] = !release;
-
       apollo_vhid::keyboard_report_t report {};
       std::size_t normal_key_count = 0;
 
       for (std::size_t i = 0xE0; i <= 0xE7; ++i) {
-        if (pressed_[i]) {
-          report.modifiers |= static_cast<std::uint8_t>(1u << (i - 0xE0));
-        }
+        if (pressed_[i]) report.modifiers |= static_cast<std::uint8_t>(1u << (i - 0xE0));
       }
-
       for (std::size_t i = 1; i < 0xE0; ++i) {
-        if (!pressed_[i]) {
-          continue;
-        }
-
-        if (normal_key_count < std::size(report.keys)) {
-          report.keys[normal_key_count] = static_cast<std::uint8_t>(i);
-        }
+        if (!pressed_[i]) continue;
+        if (normal_key_count < std::size(report.keys)) report.keys[normal_key_count] = static_cast<std::uint8_t>(i);
         ++normal_key_count;
       }
-
       if (normal_key_count > std::size(report.keys)) {
         std::fill(std::begin(report.keys), std::end(report.keys), 0x01);
       }
-
       if (!ioctl_locked(apollo_vhid::IOCTL_KEYBOARD, &report, sizeof(report))) {
         pressed_[usage] = old_state;
-        close_locked();
+        close_apollo_locked();
         return false;
       }
-
       return true;
     }
 
     bool move_mouse(int delta_x, int delta_y) {
       std::scoped_lock lock(mutex_);
-      if (handle_ == INVALID_HANDLE_VALUE) {
+      if (backend_ == backend_t::viiper) {
+        if (viiper_.move_mouse(delta_x, delta_y)) return true;
+        backend_ = backend_t::none;
         return false;
       }
+      if (backend_ != backend_t::apollo_vhid || handle_ == INVALID_HANDLE_VALUE) return false;
 
       while (delta_x != 0 || delta_y != 0) {
-        const int x = std::clamp(delta_x,
-                                 static_cast<int>(std::numeric_limits<std::int16_t>::min()),
-                                 static_cast<int>(std::numeric_limits<std::int16_t>::max()));
-        const int y = std::clamp(delta_y,
-                                 static_cast<int>(std::numeric_limits<std::int16_t>::min()),
-                                 static_cast<int>(std::numeric_limits<std::int16_t>::max()));
-
+        const int x = std::clamp(delta_x, static_cast<int>(std::numeric_limits<std::int16_t>::min()), static_cast<int>(std::numeric_limits<std::int16_t>::max()));
+        const int y = std::clamp(delta_y, static_cast<int>(std::numeric_limits<std::int16_t>::min()), static_cast<int>(std::numeric_limits<std::int16_t>::max()));
         apollo_vhid::mouse_report_t report {};
         report.buttons = buttons_;
         report.x = static_cast<std::int16_t>(x);
         report.y = static_cast<std::int16_t>(y);
-
         if (!ioctl_locked(apollo_vhid::IOCTL_MOUSE, &report, sizeof(report))) {
-          close_locked();
+          close_apollo_locked();
           return false;
         }
-
         delta_x -= x;
         delta_y -= y;
       }
-
       return true;
     }
 
     bool button_mouse(int button, bool release) {
+      std::scoped_lock lock(mutex_);
+      if (backend_ == backend_t::viiper) {
+        if (viiper_.button_mouse(button, release)) return true;
+        backend_ = backend_t::none;
+        return false;
+      }
+
       std::uint8_t bit = 0;
       switch (button) {
         case 1: bit = 0; break;
@@ -159,95 +145,64 @@ namespace platf {
         case 5: bit = 4; break;
         default: return false;
       }
-
-      std::scoped_lock lock(mutex_);
-      if (handle_ == INVALID_HANDLE_VALUE) {
-        return false;
-      }
+      if (backend_ != backend_t::apollo_vhid || handle_ == INVALID_HANDLE_VALUE) return false;
 
       const auto old_buttons = buttons_;
-      if (release) {
-        buttons_ &= static_cast<std::uint8_t>(~(1u << bit));
-      } else {
-        buttons_ |= static_cast<std::uint8_t>(1u << bit);
-      }
+      if (release) buttons_ &= static_cast<std::uint8_t>(~(1u << bit));
+      else buttons_ |= static_cast<std::uint8_t>(1u << bit);
 
       apollo_vhid::mouse_report_t report {};
       report.buttons = buttons_;
-
       if (!ioctl_locked(apollo_vhid::IOCTL_MOUSE, &report, sizeof(report))) {
         buttons_ = old_buttons;
-        close_locked();
+        close_apollo_locked();
         return false;
       }
-
       return true;
     }
 
     bool scroll(int distance, bool horizontal) {
       std::scoped_lock lock(mutex_);
-      if (handle_ == INVALID_HANDLE_VALUE) {
+      if (backend_ == backend_t::viiper) {
+        if (viiper_.scroll(distance, horizontal)) return true;
+        backend_ = backend_t::none;
         return false;
       }
+      if (backend_ != backend_t::apollo_vhid || handle_ == INVALID_HANDLE_VALUE) return false;
 
       auto &accumulator = horizontal ? hscroll_remainder_ : vscroll_remainder_;
       accumulator += distance;
       int ticks = accumulator / WHEEL_DELTA;
       accumulator %= WHEEL_DELTA;
-
       while (ticks != 0) {
         const int chunk = std::clamp(ticks, -127, 127);
-
         apollo_vhid::mouse_report_t report {};
         report.buttons = buttons_;
-        if (horizontal) {
-          report.horizontal_wheel = static_cast<std::int8_t>(chunk);
-        } else {
-          report.wheel = static_cast<std::int8_t>(chunk);
-        }
-
+        if (horizontal) report.horizontal_wheel = static_cast<std::int8_t>(chunk);
+        else report.wheel = static_cast<std::int8_t>(chunk);
         if (!ioctl_locked(apollo_vhid::IOCTL_MOUSE, &report, sizeof(report))) {
-          close_locked();
+          close_apollo_locked();
           return false;
         }
-
         ticks -= chunk;
       }
-
       return true;
     }
 
   private:
+    enum class backend_t { none, viiper, apollo_vhid };
+
     static std::uint8_t vk_to_hid_usage(std::uint8_t vk) {
-      if (vk >= 'A' && vk <= 'Z') {
-        return static_cast<std::uint8_t>(0x04 + (vk - 'A'));
-      }
-
-      if (vk >= '1' && vk <= '9') {
-        return static_cast<std::uint8_t>(0x1E + (vk - '1'));
-      }
-      if (vk == '0') {
-        return 0x27;
-      }
-
-      if (vk >= VK_F1 && vk <= VK_F12) {
-        return static_cast<std::uint8_t>(0x3A + (vk - VK_F1));
-      }
-      if (vk >= VK_F13 && vk <= VK_F24) {
-        return static_cast<std::uint8_t>(0x68 + (vk - VK_F13));
-      }
-
-      if (vk >= VK_NUMPAD1 && vk <= VK_NUMPAD9) {
-        return static_cast<std::uint8_t>(0x59 + (vk - VK_NUMPAD1));
-      }
-
+      if (vk >= 'A' && vk <= 'Z') return static_cast<std::uint8_t>(0x04 + (vk - 'A'));
+      if (vk >= '1' && vk <= '9') return static_cast<std::uint8_t>(0x1E + (vk - '1'));
+      if (vk == '0') return 0x27;
+      if (vk >= VK_F1 && vk <= VK_F12) return static_cast<std::uint8_t>(0x3A + (vk - VK_F1));
+      if (vk >= VK_F13 && vk <= VK_F24) return static_cast<std::uint8_t>(0x68 + (vk - VK_F13));
+      if (vk >= VK_NUMPAD1 && vk <= VK_NUMPAD9) return static_cast<std::uint8_t>(0x59 + (vk - VK_NUMPAD1));
       switch (vk) {
-        case VK_LCONTROL:
-        case VK_CONTROL: return 0xE0;
-        case VK_LSHIFT:
-        case VK_SHIFT: return 0xE1;
-        case VK_LMENU:
-        case VK_MENU: return 0xE2;
+        case VK_LCONTROL: case VK_CONTROL: return 0xE0;
+        case VK_LSHIFT: case VK_SHIFT: return 0xE1;
+        case VK_LMENU: case VK_MENU: return 0xE2;
         case VK_LWIN: return 0xE3;
         case VK_RCONTROL: return 0xE4;
         case VK_RSHIFT: return 0xE5;
@@ -301,29 +256,30 @@ namespace platf {
 
     bool ioctl_locked(DWORD code, void *buffer, DWORD size) {
       DWORD bytes_returned = 0;
-      return DeviceIoControl(
-               handle_,
-               code,
-               buffer,
-               size,
-               nullptr,
-               0,
-               &bytes_returned,
-               nullptr
-             ) != FALSE;
+      return DeviceIoControl(handle_, code, buffer, size, nullptr, 0, &bytes_returned, nullptr) != FALSE;
     }
 
-    void close_locked() {
-      if (handle_ != INVALID_HANDLE_VALUE) {
-        CloseHandle(handle_);
-        handle_ = INVALID_HANDLE_VALUE;
-      }
+    void close_apollo_locked() {
+      if (handle_ != INVALID_HANDLE_VALUE) { CloseHandle(handle_); handle_ = INVALID_HANDLE_VALUE; }
+      backend_ = backend_t::none;
       pressed_.fill(false);
       buttons_ = 0;
       vscroll_remainder_ = 0;
       hscroll_remainder_ = 0;
     }
 
+    void close_locked() {
+      if (backend_ == backend_t::viiper || viiper_.is_open()) viiper_.close();
+      if (handle_ != INVALID_HANDLE_VALUE) { CloseHandle(handle_); handle_ = INVALID_HANDLE_VALUE; }
+      backend_ = backend_t::none;
+      pressed_.fill(false);
+      buttons_ = 0;
+      vscroll_remainder_ = 0;
+      hscroll_remainder_ = 0;
+    }
+
+    backend_t backend_ {backend_t::none};
+    viiper_hid_t viiper_;
     HANDLE handle_ {INVALID_HANDLE_VALUE};
     std::mutex mutex_;
     std::array<bool, 256> pressed_ {};
