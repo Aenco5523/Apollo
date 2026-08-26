@@ -78,6 +78,13 @@ jobs:
         shell: msys2 {0}
         run: cmake --build build --parallel 2
 
+      - name: Package Apollo portable ZIP
+        shell: msys2 {0}
+        run: |
+          mkdir -p package_out
+          cpack -G ZIP --config ./build/CPackConfig.cmake -B ./package_out
+          ls -lh ./package_out/*.zip
+
       - name: Collect Windows binaries
         if: success()
         shell: pwsh
@@ -88,7 +95,15 @@ jobs:
             Copy-Item -Destination .\artifact -Force
           Get-ChildItem .\artifact -Force
 
-      - name: Upload Apollo host artifact
+      - name: Upload Apollo portable artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Apollo-VHID-Portable-Windows-x64
+          path: package_out/*.zip
+          if-no-files-found: error
+
+      - name: Upload Apollo host binaries
         if: success()
         uses: actions/upload-artifact@v4
         with:
