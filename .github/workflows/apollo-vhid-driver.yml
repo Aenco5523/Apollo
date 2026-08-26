@@ -24,6 +24,35 @@ jobs:
         run: |
           nuget restore .\driver\ApolloVhid\packages.config -PackagesDirectory .\driver\ApolloVhid\packages
 
+      - name: Expose WDK NuGet tools
+        shell: pwsh
+        run: |
+          $packages = (Resolve-Path .\driver\ApolloVhid\packages).Path
+          $toolNames = @('stampinf.exe', 'infverif.exe', 'inf2cat.exe', 'signtool.exe')
+          $dirs = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
+
+          foreach ($toolName in $toolNames) {
+            $matches = @(Get-ChildItem -Path $packages -Filter $toolName -Recurse -File -ErrorAction SilentlyContinue)
+            if ($matches.Count -eq 0) {
+              Write-Host "$toolName: not found in restored packages"
+              continue
+            }
+
+            foreach ($match in $matches) {
+              Write-Host "$toolName => $($match.FullName)"
+              [void]$dirs.Add($match.Directory.FullName)
+            }
+          }
+
+          $stampInf = @(Get-ChildItem -Path $packages -Filter stampinf.exe -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)
+          if ($stampInf.Count -eq 0) {
+            throw 'stampinf.exe was not found in the restored WDK NuGet package.'
+          }
+
+          foreach ($dir in $dirs) {
+            $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          }
+
       - name: Locate MSBuild
         shell: pwsh
         run: |
@@ -52,6 +81,8 @@ jobs:
           $outDir = Join-Path $root 'build\Release\x64\'
           $intDir = Join-Path $root 'build\obj\Release\x64\'
           New-Item -ItemType Directory -Force -Path $outDir, $intDir | Out-Null
+
+          Get-Command stampinf.exe | Format-List Source
 
           & "$env:MSBUILD_EXE" .\driver\ApolloVhid\ApolloVhid.vcxproj `
             /m `
