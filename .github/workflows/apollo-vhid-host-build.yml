@@ -31,24 +31,12 @@ jobs:
         run: |
           $path = '.\src\video.cpp'
           $text = Get-Content -Raw -Path $path
-          $old = @'
-      {
-        // SDR-specific options
-        {"profile"s, [](const config_t &cfg) {
-           if (cfg.profile == 66) return "baseline"s;
-           if (cfg.profile == 77) return "main"s;
-           return "high"s;
-         }},
-      },
-'@
-          $new = @'
-      {},  // SDR-specific options
-'@
-          if (-not $text.Contains($old)) {
+          $pattern = '(?ms)      \{\r?\n        // SDR-specific options\r?\n        \{"profile"s, \[\]\(const config_t &cfg\) \{\r?\n           if \(cfg\.profile == 66\) return "baseline"s;\r?\n           if \(cfg\.profile == 77\) return "main"s;\r?\n           return "high"s;\r?\n         \}\},\r?\n      \},'
+          $patched = [regex]::Replace($text, $pattern, '      {},  // SDR-specific options', 1)
+          if ($patched -eq $text) {
             throw 'Expected upstream AMF profile regression block was not found; refusing an ambiguous patch.'
           }
-          $text = $text.Replace($old, $new)
-          Set-Content -Path $path -Value $text -NoNewline
+          Set-Content -Path $path -Value $patched -NoNewline
           Write-Host 'Applied CI-only workaround for ClassicOldSong/Apollo PR #1438 build regression.'
 
       - name: Setup Node.js
