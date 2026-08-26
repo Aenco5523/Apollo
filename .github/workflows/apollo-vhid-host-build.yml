@@ -26,6 +26,31 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
+      - name: Work around upstream AMF profile build regression
+        shell: pwsh
+        run: |
+          $path = '.\src\video.cpp'
+          $text = Get-Content -Raw -Path $path
+          $old = @'
+      {
+        // SDR-specific options
+        {"profile"s, [](const config_t &cfg) {
+           if (cfg.profile == 66) return "baseline"s;
+           if (cfg.profile == 77) return "main"s;
+           return "high"s;
+         }},
+      },
+'@
+          $new = @'
+      {},  // SDR-specific options
+'@
+          if (-not $text.Contains($old)) {
+            throw 'Expected upstream AMF profile regression block was not found; refusing an ambiguous patch.'
+          }
+          $text = $text.Replace($old, $new)
+          Set-Content -Path $path -Value $text -NoNewline
+          Write-Host 'Applied CI-only workaround for ClassicOldSong/Apollo PR #1438 build regression.'
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
