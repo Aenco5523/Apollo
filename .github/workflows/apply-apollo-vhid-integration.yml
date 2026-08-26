@@ -1,0 +1,42 @@
+name: Apply Apollo V-HID Integration
+
+on:
+  push:
+    branches:
+      - apollo-vhid-ci
+    paths:
+      - 'tools/apollo-vhid/**'
+      - '.github/workflows/apply-apollo-vhid-integration.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply integration patch
+        run: python3 tools/apollo-vhid/apply_integration.py .
+
+      - name: Validate and commit integration
+        shell: bash
+        run: |
+          git diff --check
+          git status --short
+
+          if git diff --quiet -- src/config.h src/config.cpp src/platform/windows/input.cpp && \
+             git diff --quiet --no-index /dev/null src/platform/windows/virtual_hid.h 2>/dev/null; then
+            echo 'No integration changes to commit.'
+            exit 0
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/config.h src/config.cpp src/platform/windows/input.cpp src/platform/windows/virtual_hid.h
+          git commit -m 'Integrate Apollo V-HID input backend'
+          git push origin HEAD:apollo-vhid-ci
