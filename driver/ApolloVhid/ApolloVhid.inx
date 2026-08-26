@@ -1,0 +1,58 @@
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = System
+ClassGuid   = {4d36e97d-e325-11ce-bfc1-08002be10318}
+Provider    = %ProviderName%
+DriverVer   = 08/26/2026,0.1.0.0
+CatalogFile = ApolloVhid.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[SourceDisksFiles]
+ApolloVhid.sys = 1
+
+[Manufacturer]
+%ManufacturerName% = Standard,NTamd64
+
+[Standard.NTamd64]
+%DeviceDesc% = ApolloVhid_Install, Root\ApolloVhid
+
+[ApolloVhid_Install.NT]
+CopyFiles = ApolloVhid_CopyFiles
+
+[ApolloVhid_CopyFiles]
+ApolloVhid.sys
+
+[ApolloVhid_Install.NT.HW]
+AddReg = ApolloVhid_Install.NT.AddReg
+
+[ApolloVhid_Install.NT.AddReg]
+HKR,,"LowerFilters",0x00010000,"vhf"
+
+[ApolloVhid_Install.NT.Services]
+AddService = ApolloVhid,0x00000002,ApolloVhid_Service
+
+[ApolloVhid_Service]
+DisplayName   = %ServiceDesc%
+ServiceType   = 1
+StartType     = 3
+ErrorControl  = 1
+ServiceBinary = %13%\ApolloVhid.sys
+
+[ApolloVhid_Install.NT.Wdf]
+KmdfService = ApolloVhid, ApolloVhid_WdfSect
+
+[ApolloVhid_WdfSect]
+KmdfLibraryVersion = $KMDFVERSION$
+
+[Strings]
+ProviderName     = "Apollo V-HID Prototype"
+ManufacturerName = "Apollo V-HID Prototype"
+DeviceDesc       = "Apollo Virtual HID Source"
+ServiceDesc      = "Apollo Virtual HID Source Driver"
+DiskName         = "Apollo V-HID Driver Disk"
