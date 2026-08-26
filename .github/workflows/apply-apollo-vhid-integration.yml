@@ -29,8 +29,7 @@ jobs:
           git diff --check
           git status --short
 
-          if git diff --quiet -- src/config.h src/config.cpp src/platform/windows/input.cpp && \
-             git diff --quiet --no-index /dev/null src/platform/windows/virtual_hid.h 2>/dev/null; then
+          if [[ -z "$(git status --porcelain -- src/config.h src/config.cpp src/platform/windows/input.cpp src/platform/windows/virtual_hid.h)" ]]; then
             echo 'No integration changes to commit.'
             exit 0
           fi
