@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{47B6E411-56A8-4E53-A723-6D705A2D7A10}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>ApolloVhid</RootNamespace>
+    <ProjectName>ApolloVhid</ProjectName>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Driver</ConfigurationType><DriverType>KMDF</DriverType><PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset><UseDebugLibraries>true</UseDebugLibraries><TargetVersion>Windows10</TargetVersion>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Driver</ConfigurationType><DriverType>KMDF</DriverType><PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset><UseDebugLibraries>false</UseDebugLibraries><TargetVersion>Windows10</TargetVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile><WarningLevel>Level4</WarningLevel><TreatWarningAsError>false</TreatWarningAsError></ClCompile>
+    <Link><AdditionalDependencies>VhfKm.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile><WarningLevel>Level4</WarningLevel><TreatWarningAsError>false</TreatWarningAsError></ClCompile>
+    <Link><AdditionalDependencies>VhfKm.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="ApolloVhid.c" /></ItemGroup>
+  <ItemGroup><ClInclude Include="ApolloVhid.h" /></ItemGroup>
+  <ItemGroup><Inf Include="ApolloVhid.inx" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
