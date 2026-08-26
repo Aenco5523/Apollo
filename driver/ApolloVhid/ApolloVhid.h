@@ -1,0 +1,42 @@
+#pragma once
+
+#include <ntddk.h>
+#include <wdf.h>
+#include <vhf.h>
+
+#define APOLLO_VHID_NT_DEVICE_NAME  L"\\Device\\ApolloVhid"
+#define APOLLO_VHID_DOS_DEVICE_NAME L"\\DosDevices\\ApolloVhid"
+
+#define IOCTL_APOLLO_VHID_KEYBOARD CTL_CODE(FILE_DEVICE_UNKNOWN, 0x800, METHOD_BUFFERED, FILE_WRITE_DATA)
+#define IOCTL_APOLLO_VHID_MOUSE    CTL_CODE(FILE_DEVICE_UNKNOWN, 0x801, METHOD_BUFFERED, FILE_WRITE_DATA)
+
+#define APOLLO_VHID_KEYBOARD_REPORT_ID 1
+#define APOLLO_VHID_MOUSE_REPORT_ID    2
+
+#pragma pack(push, 1)
+typedef struct _APOLLO_VHID_KEYBOARD_REPORT {
+    UCHAR Modifiers;
+    UCHAR Reserved;
+    UCHAR Keys[6];
+} APOLLO_VHID_KEYBOARD_REPORT, *PAPOLLO_VHID_KEYBOARD_REPORT;
+
+typedef struct _APOLLO_VHID_MOUSE_REPORT {
+    UCHAR Buttons;
+    SHORT X;
+    SHORT Y;
+    CHAR Wheel;
+    CHAR HorizontalWheel;
+} APOLLO_VHID_MOUSE_REPORT, *PAPOLLO_VHID_MOUSE_REPORT;
+#pragma pack(pop)
+
+typedef struct _DEVICE_CONTEXT {
+    VHFHANDLE VhfHandle;
+} DEVICE_CONTEXT, *PDEVICE_CONTEXT;
+
+WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_CONTEXT, ApolloVhidGetContext)
+
+DRIVER_INITIALIZE DriverEntry;
+EVT_WDF_DRIVER_DEVICE_ADD ApolloVhidEvtDeviceAdd;
+EVT_WDF_OBJECT_CONTEXT_CLEANUP ApolloVhidEvtDeviceCleanup;
+EVT_WDF_IO_QUEUE_IO_DEVICE_CONTROL ApolloVhidEvtIoDeviceControl;
+EVT_WDF_FILE_CLEANUP ApolloVhidEvtFileCleanup;
