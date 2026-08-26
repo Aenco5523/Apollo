@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+# Applies the V-HID integration to the current Apollo checkout in CI.
 import shutil
 import sys
 from pathlib import Path
