@@ -24,25 +24,63 @@ jobs:
         run: |
           nuget restore .\driver\ApolloVhid\packages.config -PackagesDirectory .\driver\ApolloVhid\packages
 
+      - name: Locate MSBuild
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "vswhere.exe was not found at $vswhere"
+          }
+
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
+          if (-not $vsPath) {
+            throw "Visual Studio with MSBuild was not found"
+          }
+
+          $msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
+          if (-not (Test-Path $msbuild)) {
+            throw "MSBuild.exe was not found at $msbuild"
+          }
+
+          "MSBUILD_EXE=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Using MSBuild: $msbuild"
+
       - name: Build ApolloVhid x64 Release
         shell: pwsh
         run: |
-          msbuild .\driver\ApolloVhid\ApolloVhid.vcxproj /m /p:Configuration=Release /p:Platform=x64 /p:SignMode=Off /v:minimal
+          $root = (Resolve-Path .\driver\ApolloVhid).Path
+          $outDir = Join-Path $root 'build\Release\x64\'
+          $intDir = Join-Path $root 'build\obj\Release\x64\'
+          New-Item -ItemType Directory -Force -Path $outDir, $intDir | Out-Null
+
+          & "$env:MSBUILD_EXE" .\driver\ApolloVhid\ApolloVhid.vcxproj `
+            /m `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:SignMode=Off `
+            "/p:OutDir=$outDir" `
+            "/p:IntDir=$intDir" `
+            /v:minimal
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Collect driver package
-        if: always()
+        if: success()
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path .\artifact | Out-Null
-          Get-ChildItem .\driver\ApolloVhid -Recurse -File |
-            Where-Object { $_.Extension -in '.sys','.inf','.inx','.cat','.pdb' } |
+          Get-ChildItem .\driver\ApolloVhid\build -Recurse -File |
+            Where-Object { $_.Extension -in '.sys','.inf','.cat','.pdb' } |
             Copy-Item -Destination .\artifact -Force
+          Copy-Item .\driver\ApolloVhid\ApolloVhid.inx .\artifact\ApolloVhid.inx -Force
           Get-ChildItem .\artifact -Force
 
       - name: Upload ApolloVhid artifact
-        if: always()
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ApolloVhid-x64-Release
           path: artifact/
-          if-no-files-found: warn
+          if-no-files-found: error
