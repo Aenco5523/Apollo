@@ -209,6 +209,7 @@ namespace config {
     bool controller;
 
     bool always_send_scancodes;
+    bool virtual_hid;
 
     bool high_resolution_scrolling;
     bool native_pen_touch;

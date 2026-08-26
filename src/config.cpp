@@ -572,6 +572,7 @@ namespace config {
     true,  // mouse enabled
     true,  // controller enabled
     true,  // always send scancodes
+    false, // virtual HID keyboard/mouse (Windows only)
     true,  // high resolution scrolling
     true,  // native pen/touch support
     false, // enable input only mode
@@ -1288,6 +1289,7 @@ namespace config {
     bool_f(vars, "controller", input.controller);
 
     bool_f(vars, "always_send_scancodes", input.always_send_scancodes);
+    bool_f(vars, "virtual_hid", input.virtual_hid);
 
     bool_f(vars, "high_resolution_scrolling", input.high_resolution_scrolling);
     bool_f(vars, "native_pen_touch", input.native_pen_touch);

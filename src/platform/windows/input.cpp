@@ -17,6 +17,7 @@
 // local includes
 #include "keylayout.h"
 #include "misc.h"
+#include "virtual_hid.h"
 #include "src/config.h"
 #include "src/globals.h"
 #include "src/logging.h"
@@ -442,10 +443,12 @@ namespace platf {
 
   struct input_raw_t {
     ~input_raw_t() {
+      delete virtual_hid;
       delete vigem;
     }
 
     vigem_t *vigem;
+    virtual_hid_t *virtual_hid;
 
     decltype(CreateSyntheticPointerDevice) *fnCreateSyntheticPointerDevice;
     decltype(InjectSyntheticPointerInput) *fnInjectSyntheticPointerInput;
@@ -460,6 +463,17 @@ namespace platf {
     if (raw.vigem->init()) {
       delete raw.vigem;
       raw.vigem = nullptr;
+    }
+
+    if (config::input.virtual_hid) {
+      raw.virtual_hid = new virtual_hid_t {};
+      if (!raw.virtual_hid->open()) {
+        BOOST_LOG(warning) << "Virtual HID requested, but ApolloVhid could not be opened. Falling back to SendInput."sv;
+        delete raw.virtual_hid;
+        raw.virtual_hid = nullptr;
+      } else {
+        BOOST_LOG(info) << "Virtual HID keyboard/mouse backend enabled"sv;
+      }
     }
 
     // Get pointers to virtual touch/pen input functions (Win10 1809+)
@@ -532,6 +546,11 @@ namespace platf {
   }
 
   void move_mouse(input_t &input, int deltaX, int deltaY) {
+    auto &raw = *(input_raw_t *) input.get();
+    if (raw.virtual_hid && raw.virtual_hid->move_mouse(deltaX, deltaY)) {
+      return;
+    }
+
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -559,6 +578,11 @@ namespace platf {
   }
 
   void button_mouse(input_t &input, int button, bool release) {
+    auto &raw = *(input_raw_t *) input.get();
+    if (raw.virtual_hid && raw.virtual_hid->button_mouse(button, release)) {
+      return;
+    }
+
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -582,6 +606,11 @@ namespace platf {
   }
 
   void scroll(input_t &input, int distance) {
+    auto &raw = *(input_raw_t *) input.get();
+    if (raw.virtual_hid && raw.virtual_hid->scroll(distance, false)) {
+      return;
+    }
+
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -594,6 +623,11 @@ namespace platf {
   }
 
   void hscroll(input_t &input, int distance) {
+    auto &raw = *(input_raw_t *) input.get();
+    if (raw.virtual_hid && raw.virtual_hid->scroll(distance, true)) {
+      return;
+    }
+
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -606,6 +640,11 @@ namespace platf {
   }
 
   void keyboard_update(input_t &input, uint16_t modcode, bool release, uint8_t flags) {
+    auto &raw = *(input_raw_t *) input.get();
+    if (raw.virtual_hid && raw.virtual_hid->keyboard(modcode, release)) {
+      return;
+    }
+
     INPUT i {};
     i.type = INPUT_KEYBOARD;
     auto &ki = i.ki;
