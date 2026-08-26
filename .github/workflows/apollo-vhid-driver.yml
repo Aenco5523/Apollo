@@ -44,16 +44,34 @@ jobs:
             }
           }
 
-          $stampInf = @(Get-ChildItem -Path $packages -Filter stampinf.exe -Recurse -File -ErrorAction SilentlyContinue | Select-Object -First 1)
-          if ($stampInf.Count -eq 0) {
-            throw 'stampinf.exe was not found in the restored WDK NuGet package.'
+          $stampInf = Get-ChildItem -Path $packages -Filter stampinf.exe -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -eq 'x64' } |
+            Select-Object -First 1
+          if (-not $stampInf) {
+            throw 'x64 stampinf.exe was not found in the restored WDK NuGet package.'
           }
+          $stampInf.Directory.FullName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+          $infVerifDll = Get-ChildItem -Path $packages -Filter InfVerif.dll -Recurse -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -eq 'x64' } |
+            Select-Object -First 1
+          if (-not $infVerifDll) {
+            $infVerifDll = Get-ChildItem -Path $packages -Filter InfVerif.dll -Recurse -File -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          }
+          if (-not $infVerifDll) {
+            throw 'InfVerif.dll was not found in the restored WDK NuGet package.'
+          }
+
+          $infVerifRoot = $infVerifDll.Directory.Parent.FullName
+          Write-Host "InfVerif native root => $infVerifRoot"
+          "WDK_INFVERIF_ROOT=$infVerifRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
           foreach ($dir in $dirs) {
             $dir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           }
 
-      - name: Locate MSBuild
+      - name: Locate 64-bit MSBuild
         shell: pwsh
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -63,12 +81,12 @@ jobs:
 
           $vsPath = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild -property installationPath
           if (-not $vsPath) {
-            throw "Visual Studio with MSBuild was not found"
+            throw 'Visual Studio with MSBuild was not found'
           }
 
-          $msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\MSBuild.exe'
+          $msbuild = Join-Path $vsPath 'MSBuild\Current\Bin\amd64\MSBuild.exe'
           if (-not (Test-Path $msbuild)) {
-            throw "MSBuild.exe was not found at $msbuild"
+            throw "64-bit MSBuild.exe was not found at $msbuild"
           }
 
           "MSBUILD_EXE=$msbuild" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -77,24 +95,24 @@ jobs:
       - name: Build ApolloVhid x64 Release
         shell: pwsh
         run: |
-          $root = (Resolve-Path .\driver\ApolloVhid).Path
-          $outDir = Join-Path $root 'build\Release\x64\'
-          $intDir = Join-Path $root 'build\obj\Release\x64\'
-          New-Item -ItemType Directory -Force -Path $outDir, $intDir | Out-Null
-
+          $project = (Resolve-Path .\driver\ApolloVhid\ApolloVhid.vcxproj).Path
           Get-Command stampinf.exe | Format-List Source
 
-          & "$env:MSBUILD_EXE" .\driver\ApolloVhid\ApolloVhid.vcxproj `
-            /m `
-            /p:Configuration=Release `
-            /p:Platform=x64 `
-            /p:SignMode=Off `
-            "/p:OutDir=$outDir" `
-            "/p:IntDir=$intDir" `
-            /v:minimal
+          Push-Location "$env:WDK_INFVERIF_ROOT"
+          try {
+            & "$env:MSBUILD_EXE" "$project" `
+              /m `
+              /p:Configuration=Release `
+              /p:Platform=x64 `
+              /p:SignMode=Off `
+              /v:minimal
 
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+            if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+            }
+          }
+          finally {
+            Pop-Location
           }
 
       - name: Collect driver package
@@ -102,8 +120,12 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path .\artifact | Out-Null
-          Get-ChildItem .\driver\ApolloVhid\build -Recurse -File |
-            Where-Object { $_.Extension -in '.sys','.inf','.cat','.pdb' } |
+          Get-ChildItem .\driver\ApolloVhid -Recurse -File |
+            Where-Object {
+              $_.FullName -notmatch '\\packages\\' -and
+              $_.BaseName -eq 'ApolloVhid' -and
+              $_.Extension -in '.sys','.inf','.cat','.pdb'
+            } |
             Copy-Item -Destination .\artifact -Force
           Copy-Item .\driver\ApolloVhid\ApolloVhid.inx .\artifact\ApolloVhid.inx -Force
           Get-ChildItem .\artifact -Force
