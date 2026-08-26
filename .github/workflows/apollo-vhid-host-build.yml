@@ -9,6 +9,8 @@ on:
       - 'src/config.cpp'
       - 'src/platform/windows/input.cpp'
       - 'src/platform/windows/virtual_hid.h'
+      - 'tools/apollo-vhid/ApolloVhidDevnode.cpp'
+      - 'tools/apollo-vhid/*.ps1'
       - '.github/workflows/apollo-vhid-host-build.yml'
   workflow_dispatch:
 
@@ -78,12 +80,30 @@ jobs:
         shell: msys2 {0}
         run: cmake --build build --parallel 2
 
+      - name: Build V-HID devnode helper
+        shell: msys2 {0}
+        run: |
+          g++ -std=c++20 -O2 -municode tools/apollo-vhid/ApolloVhidDevnode.cpp -o build/ApolloVhidDevnode.exe -lsetupapi
+          ./build/ApolloVhidDevnode.exe --help
+
       - name: Package Apollo portable ZIP
         shell: msys2 {0}
         run: |
           mkdir -p package_out
           cpack -G ZIP --config ./build/CPackConfig.cmake -B ./package_out
           ls -lh ./package_out/*.zip
+
+      - name: Collect V-HID test tools
+        if: success()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path .\tools_artifact | Out-Null
+          Copy-Item .\build\ApolloVhidDevnode.exe .\tools_artifact\ApolloVhidDevnode.exe -Force
+          Copy-Item .\tools\apollo-vhid\Install-ApolloVhid.ps1 .\tools_artifact\Install-ApolloVhid.ps1 -Force
+          Copy-Item .\tools\apollo-vhid\Remove-ApolloVhidDevice.ps1 .\tools_artifact\Remove-ApolloVhidDevice.ps1 -Force
+          Copy-Item .\tools\apollo-vhid\Start-ApolloVhidPortable.ps1 .\tools_artifact\Start-ApolloVhidPortable.ps1 -Force
+          Copy-Item .\tools\apollo-vhid\README_SETUP_KO.md .\tools_artifact\README_SETUP_KO.md -Force
+          Get-ChildItem .\tools_artifact -Force
 
       - name: Collect Windows binaries
         if: success()
@@ -101,6 +121,14 @@ jobs:
         with:
           name: Apollo-VHID-Portable-Windows-x64
           path: package_out/*.zip
+          if-no-files-found: error
+
+      - name: Upload Apollo V-HID tools
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Apollo-VHID-Tools-Windows-x64
+          path: tools_artifact/
           if-no-files-found: error
 
       - name: Upload Apollo host binaries
