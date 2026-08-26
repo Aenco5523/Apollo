@@ -17,9 +17,9 @@ DefaultDestDir = 13
 ApolloVhid.sys = 1
 
 [Manufacturer]
-%ManufacturerName% = Standard,NTamd64
+%ManufacturerName% = Standard,NTamd64.10.0...16299
 
-[Standard.NTamd64]
+[Standard.NTamd64.10.0...16299]
 %DeviceDesc% = ApolloVhid_Install, Root\ApolloVhid
 
 [ApolloVhid_Install.NT]
