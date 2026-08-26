@@ -34,7 +34,7 @@ jobs:
           foreach ($toolName in $toolNames) {
             $matches = @(Get-ChildItem -Path $packages -Filter $toolName -Recurse -File -ErrorAction SilentlyContinue)
             if ($matches.Count -eq 0) {
-              Write-Host "$toolName: not found in restored packages"
+              Write-Host "${toolName}: not found in restored packages"
               continue
             }
 
