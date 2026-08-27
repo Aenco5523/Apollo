@@ -136,7 +136,9 @@ jobs:
 
           $viiperExe = Get-ChildItem .\complete_bundle\VIIPER -Recurse -File -Filter 'viiper*.exe' | Select-Object -First 1
           if (-not $viiperExe) { throw 'VIIPER executable was not found after extraction.' }
-          Copy-Item $viiperExe.FullName .\complete_bundle\VIIPER\viiper.exe -Force
+          if (-not (Test-Path .\complete_bundle\VIIPER\viiper.exe)) {
+            Copy-Item $viiperExe.FullName .\complete_bundle\VIIPER\viiper.exe -Force
+          }
 
           New-Item -ItemType Directory -Force -Path .\complete_bundle\Apollo\config | Out-Null
           Set-Content -Path .\complete_bundle\Apollo\config\sunshine.conf -Encoding ascii -Value 'virtual_hid = true'
