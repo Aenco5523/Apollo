@@ -44,6 +44,20 @@ jobs:
           Set-Content -Path $path -Value $patched -NoNewline
           Write-Host 'Applied CI-only workaround for ClassicOldSong/Apollo PR #1438 build regression.'
 
+      - name: Fix VIIPER bus creation request for test build
+        shell: pwsh
+        run: |
+          $path = '.\src\platform\windows\viiper_hid.cpp'
+          $text = Get-Content -Raw -Path $path
+          $old = 'api_request("bus/create", response)'
+          $new = 'api_request("bus/create 1001", response)'
+          if (-not $text.Contains($old)) {
+            throw 'Expected VIIPER bus/create request was not found.'
+          }
+          $text = $text.Replace($old, $new)
+          Set-Content -Path $path -Value $text -NoNewline
+          Write-Host 'Applied VIIPER bus/create payload fix for this test build.'
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -96,6 +110,87 @@ jobs:
           cpack -G ZIP --config ./build/CPackConfig.cmake -B ./package_out
           ls -lh ./package_out/*.zip
 
+      - name: Build Apollo plus VIIPER complete ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $viiperUrl = 'https://github.com/Alia5/VIIPER/releases/download/dev-snapshot/viiper-windows-amd64.zip'
+          $viiperExpectedSha256 = '1fe869ab0b5e181d7a98c7d489f57ec3104add65761f13bf13d9181a8943d62e'
+          $viiperZip = Join-Path $PWD 'viiper-windows-amd64.zip'
+          Invoke-WebRequest -Uri $viiperUrl -OutFile $viiperZip
+          $viiperActualSha256 = (Get-FileHash -Algorithm SHA256 -Path $viiperZip).Hash.ToLowerInvariant()
+          if ($viiperActualSha256 -ne $viiperExpectedSha256) {
+            throw "VIIPER SHA-256 mismatch: $viiperActualSha256"
+          }
+
+          Remove-Item -Recurse -Force .\complete_bundle, .\viiper_dist, .\complete_out -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path .\complete_bundle, .\viiper_dist, .\complete_out | Out-Null
+          Expand-Archive -Path $viiperZip -DestinationPath .\viiper_dist -Force
+
+          $apolloZip = Get-ChildItem .\package_out -Filter *.zip | Select-Object -First 1
+          if (-not $apolloZip) { throw 'Apollo portable ZIP was not found.' }
+          Expand-Archive -Path $apolloZip.FullName -DestinationPath .\complete_bundle -Force
+
+          New-Item -ItemType Directory -Force -Path .\complete_bundle\VIIPER | Out-Null
+          Copy-Item .\viiper_dist\* .\complete_bundle\VIIPER\ -Recurse -Force
+
+          $viiperExe = Get-ChildItem .\complete_bundle\VIIPER -Recurse -File -Filter 'viiper*.exe' | Select-Object -First 1
+          if (-not $viiperExe) { throw 'VIIPER executable was not found after extraction.' }
+          Copy-Item $viiperExe.FullName .\complete_bundle\VIIPER\viiper.exe -Force
+
+          New-Item -ItemType Directory -Force -Path .\complete_bundle\Apollo\config | Out-Null
+          Set-Content -Path .\complete_bundle\Apollo\config\sunshine.conf -Encoding ascii -Value 'virtual_hid = true'
+
+          $launcher = @'
+          @echo off
+          setlocal
+          set "ROOT=%~dp0"
+          set "VIIPER=%ROOT%VIIPER\viiper.exe"
+          set "APOLLO=%ROOT%Apollo\sunshine.exe"
+          if not exist "%VIIPER%" (
+            echo [ERROR] VIIPER executable not found.
+            pause
+            exit /b 1
+          )
+          if not exist "%APOLLO%" (
+            echo [ERROR] Apollo executable not found.
+            pause
+            exit /b 1
+          )
+          start "VIIPER" "%VIIPER%" server
+          powershell -NoProfile -Command "$ok=$false; 1..30 ^| %% { try { $c=[Net.Sockets.TcpClient]::new(); $c.Connect('127.0.0.1',3242); $c.Close(); $ok=$true; break } catch { Start-Sleep -Milliseconds 200 } }; if(-not $ok){exit 1}"
+          if errorlevel 1 (
+            echo [ERROR] VIIPER API did not open on 127.0.0.1:3242.
+            echo Make sure a normally signed usbip-win2 installation is present.
+            pause
+            exit /b 2
+          )
+          pushd "%ROOT%Apollo"
+          "%APOLLO%"
+          popd
+          endlocal
+          '@
+          Set-Content -Path .\complete_bundle\Start-Apollo-VIIPER.cmd -Encoding ascii -Value $launcher
+
+          $readme = @'
+          Apollo + VIIPER test bundle
+
+          1. This ZIP already contains the VIIPER Windows x64 runtime.
+          2. A normally signed usbip-win2 installation is still required on Windows.
+          3. Do not disable Windows driver-signing or other security protections.
+          4. Double-click Start-Apollo-VIIPER.cmd.
+          5. Apollo config in this fresh bundle contains: virtual_hid = true
+
+          VIIPER source/release: https://github.com/Alia5/VIIPER
+          Bundled VIIPER release SHA-256:
+          1fe869ab0b5e181d7a98c7d489f57ec3104add65761f13bf13d9181a8943d62e
+          '@
+          Set-Content -Path .\complete_bundle\README_APOLLO_VIIPER.txt -Encoding utf8 -Value $readme
+
+          Compress-Archive -Path .\complete_bundle\* -DestinationPath .\complete_out\Apollo-VIIPER-Complete-Windows-x64.zip -CompressionLevel Optimal -Force
+          Get-FileHash -Algorithm SHA256 .\complete_out\Apollo-VIIPER-Complete-Windows-x64.zip
+          Get-ChildItem .\complete_out
+
       - name: Collect V-HID test tools
         if: success()
         shell: pwsh
@@ -117,6 +212,14 @@ jobs:
             Where-Object { $_.FullName -notmatch '\\_deps\\' -and $_.FullName -notmatch '\\CMakeFiles\\' } |
             Copy-Item -Destination .\artifact -Force
           Get-ChildItem .\artifact -Force
+
+      - name: Upload Apollo plus VIIPER complete artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Apollo-VIIPER-Complete-Windows-x64
+          path: complete_out/Apollo-VIIPER-Complete-Windows-x64.zip
+          if-no-files-found: error
 
       - name: Upload Apollo portable artifact
         if: success()
