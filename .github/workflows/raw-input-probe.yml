@@ -1,0 +1,47 @@
+name: Build Raw Input Probe
+
+on:
+  push:
+    branches:
+      - apollo-vhid-ci
+    paths:
+      - 'tools/apollo-vhid/RawInputProbe.cpp'
+      - '.github/workflows/raw-input-probe.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup MSYS2 UCRT64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+
+      - name: Build RawInputProbe.exe
+        shell: msys2 {0}
+        run: |
+          mkdir -p raw-input-probe
+          g++ -std=c++20 -O2 -municode -static-libgcc -static-libstdc++ \
+            tools/apollo-vhid/RawInputProbe.cpp \
+            -o raw-input-probe/RawInputProbe.exe \
+            -luser32
+          ls -lh raw-input-probe/RawInputProbe.exe
+
+      - name: Upload Raw Input probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: Apollo-VIIPER-RawInputProbe-Windows-x64
+          path: raw-input-probe/RawInputProbe.exe
+          if-no-files-found: error
