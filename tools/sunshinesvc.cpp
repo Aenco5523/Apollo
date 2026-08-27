@@ -1,12 +1,14 @@
 /**
  * @file tools/sunshinesvc.cpp
- * @brief Handles launching Sunshine.exe into user sessions as SYSTEM
+ * @brief Handles launching Sunshine.exe and bundled VIIPER into user sessions as SYSTEM
  */
 #define WIN32_LEAN_AND_MEAN
-#include <format>
-#include <string>
+#include <winsock2.h>
 #include <Windows.h>
 #include <WtsApi32.h>
+
+#include <format>
+#include <string>
 
 // PROC_THREAD_ATTRIBUTE_JOB_LIST is currently missing from MinGW headers
 #ifndef PROC_THREAD_ATTRIBUTE_JOB_LIST
@@ -26,8 +28,8 @@ DWORD WINAPI HandlerEx(DWORD dwControl, DWORD dwEventType, LPVOID lpEventData, L
       return NO_ERROR;
 
     case SERVICE_CONTROL_SESSIONCHANGE:
-      // If a new session connects to the console, restart Sunshine
-      // to allow it to spawn inside the new console session.
+      // If a new session connects to the console, restart Apollo and VIIPER
+      // to allow both to spawn inside the new console session.
       if (dwEventType == WTS_CONSOLE_CONNECT) {
         SetEvent(session_change_event);
       }
@@ -59,12 +61,10 @@ HANDLE CreateJobObjectForChildProcess() {
 
   JOBOBJECT_EXTENDED_LIMIT_INFORMATION job_limit_info = {};
 
-  // Kill Sunshine.exe when the final job object handle is closed (which will happen if we terminate unexpectedly).
-  // This ensures we don't leave an orphaned Sunshine.exe running with an inherited handle to our log file.
+  // Kill Apollo/VIIPER when the final job object handle is closed.
   job_limit_info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
 
-  // Allow Sunshine.exe to use CREATE_BREAKAWAY_FROM_JOB when spawning processes to ensure they can to live beyond
-  // the lifetime of SunshineSvc.exe. This avoids unexpected user data loss if we crash or are killed.
+  // Allow Apollo to use CREATE_BREAKAWAY_FROM_JOB when spawning streamed applications.
   job_limit_info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_BREAKAWAY_OK;
 
   if (!SetInformationJobObject(job_handle, JobObjectExtendedLimitInformation, &job_limit_info, sizeof(job_limit_info))) {
@@ -130,6 +130,70 @@ HANDLE OpenLogFileHandle() {
   return CreateFileW(log_file_name, GENERIC_WRITE, FILE_SHARE_READ, &security_attributes, CREATE_ALWAYS, 0, nullptr);
 }
 
+std::wstring InstalledPath(const wchar_t *relative_path) {
+  wchar_t current_dir[32768];
+  const DWORD length = GetCurrentDirectoryW(_countof(current_dir), current_dir);
+  if (length == 0 || length >= _countof(current_dir)) {
+    return {};
+  }
+
+  std::wstring result(current_dir, length);
+  if (!result.empty() && result.back() != L'\\') {
+    result += L'\\';
+  }
+  result += relative_path;
+  return result;
+}
+
+bool WaitForViiperApi() {
+  WSADATA data = {};
+  if (WSAStartup(MAKEWORD(2, 2), &data) != 0) {
+    return false;
+  }
+
+  bool ready = false;
+  for (int attempt = 0; attempt < 50 && !ready; ++attempt) {
+    SOCKET socket_handle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (socket_handle != INVALID_SOCKET) {
+      sockaddr_in address = {};
+      address.sin_family = AF_INET;
+      address.sin_port = htons(3242);
+      address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+      ready = connect(socket_handle, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) == 0;
+      closesocket(socket_handle);
+    }
+
+    if (!ready) {
+      Sleep(100);
+    }
+  }
+
+  WSACleanup();
+  return ready;
+}
+
+bool LaunchSessionProcess(HANDLE console_token,
+                          STARTUPINFOEXW &startup_info,
+                          const std::wstring &application,
+                          std::wstring command_line,
+                          PROCESS_INFORMATION &process_info) {
+  LPWSTR mutable_command = command_line.empty() ? nullptr : command_line.data();
+  return CreateProcessAsUserW(
+           console_token,
+           application.c_str(),
+           mutable_command,
+           nullptr,
+           nullptr,
+           TRUE,
+           CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
+           nullptr,
+           nullptr,
+           reinterpret_cast<LPSTARTUPINFOW>(&startup_info),
+           &process_info
+         ) != FALSE;
+}
+
 bool RunTerminationHelper(HANDLE console_token, DWORD pid) {
   WCHAR module_path[MAX_PATH];
   GetModuleFileNameW(nullptr, module_path, _countof(module_path));
@@ -145,7 +209,7 @@ bool RunTerminationHelper(HANDLE console_token, DWORD pid) {
   startup_info.lpDesktop = (LPWSTR) L"winsta0\\default";
 
   // Execute ourselves as a detached process in the user session with the --terminate argument.
-  // This will allow us to attach to Sunshine's console and send it a Ctrl-C event.
+  // This will allow us to attach to Apollo's console and send it a Ctrl-C event.
   PROCESS_INFORMATION process_info;
   if (!CreateProcessAsUserW(console_token, module_path, (LPWSTR) command.c_str(), nullptr, nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT | DETACHED_PROCESS, nullptr, nullptr, &startup_info, &process_info)) {
     return false;
@@ -169,12 +233,10 @@ bool RunTerminationHelper(HANDLE console_token, DWORD pid) {
 VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
   service_status_handle = RegisterServiceCtrlHandlerEx(SERVICE_NAME, HandlerEx, nullptr);
   if (service_status_handle == nullptr) {
-    // Nothing we can really do here but terminate ourselves
     ExitProcess(GetLastError());
     return;
   }
 
-  // Tell SCM we're starting
   service_status.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
   service_status.dwServiceSpecificExitCode = 0;
   service_status.dwWin32ExitCode = NO_ERROR;
@@ -184,20 +246,16 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
   service_status.dwCurrentState = SERVICE_START_PENDING;
   SetServiceStatus(service_status_handle, &service_status);
 
-  // Create a manual-reset stop event
   stop_event = CreateEventA(nullptr, TRUE, FALSE, nullptr);
   if (stop_event == nullptr) {
-    // Tell SCM we failed to start
     service_status.dwWin32ExitCode = GetLastError();
     service_status.dwCurrentState = SERVICE_STOPPED;
     SetServiceStatus(service_status_handle, &service_status);
     return;
   }
 
-  // Create an auto-reset session change event
   session_change_event = CreateEventA(nullptr, FALSE, FALSE, nullptr);
   if (session_change_event == nullptr) {
-    // Tell SCM we failed to start
     service_status.dwWin32ExitCode = GetLastError();
     service_status.dwCurrentState = SERVICE_STOPPED;
     SetServiceStatus(service_status_handle, &service_status);
@@ -206,14 +264,12 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
 
   auto log_file_handle = OpenLogFileHandle();
   if (log_file_handle == INVALID_HANDLE_VALUE) {
-    // Tell SCM we failed to start
     service_status.dwWin32ExitCode = GetLastError();
     service_status.dwCurrentState = SERVICE_STOPPED;
     SetServiceStatus(service_status_handle, &service_status);
     return;
   }
 
-  // We can use a single STARTUPINFOEXW for all the processes that we launch
   STARTUPINFOEXW startup_info = {};
   startup_info.StartupInfo.cb = sizeof(startup_info);
   startup_info.StartupInfo.lpDesktop = (LPWSTR) L"winsta0\\default";
@@ -222,29 +278,27 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
   startup_info.StartupInfo.hStdOutput = log_file_handle;
   startup_info.StartupInfo.hStdError = log_file_handle;
 
-  // Allocate an attribute list with space for 2 entries
   startup_info.lpAttributeList = AllocateProcThreadAttributeList(2);
   if (startup_info.lpAttributeList == nullptr) {
-    // Tell SCM we failed to start
     service_status.dwWin32ExitCode = GetLastError();
     service_status.dwCurrentState = SERVICE_STOPPED;
     SetServiceStatus(service_status_handle, &service_status);
     return;
   }
 
-  // Only allow Sunshine.exe to inherit the log file handle, not all inheritable handles
   UpdateProcThreadAttribute(startup_info.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &log_file_handle, sizeof(log_file_handle), nullptr, nullptr);
 
-  // Tell SCM we're running (and stoppable now)
   service_status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PRESHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE;
   service_status.dwCurrentState = SERVICE_RUNNING;
   SetServiceStatus(service_status_handle, &service_status);
 
-  // Loop every 3 seconds until the stop event is set or Sunshine.exe is running
+  const auto viiper_path = InstalledPath(L"viiper\\viiper.exe");
+  const auto apollo_path = InstalledPath(L"sunshine.exe");
+
+  // Loop every 3 seconds until the stop event is set or Apollo is running.
   while (WaitForSingleObject(stop_event, 3000) != WAIT_OBJECT_0) {
     auto console_session_id = WTSGetActiveConsoleSessionId();
     if (console_session_id == 0xFFFFFFFF) {
-      // No console session yet
       continue;
     }
 
@@ -253,18 +307,37 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
       continue;
     }
 
-    // Job objects cannot span sessions, so we must create one for each process
     auto job_handle = CreateJobObjectForChildProcess();
     if (job_handle == nullptr) {
       CloseHandle(console_token);
       continue;
     }
 
-    // Start Sunshine.exe inside our job object
     UpdateProcThreadAttribute(startup_info.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job_handle, sizeof(job_handle), nullptr, nullptr);
 
-    PROCESS_INFORMATION process_info;
-    if (!CreateProcessAsUserW(console_token, L"Sunshine.exe", nullptr, nullptr, nullptr, TRUE, CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, (LPSTARTUPINFOW) &startup_info, &process_info)) {
+    // VIIPER must be ready before Apollo initializes its virtual HID backend.
+    PROCESS_INFORMATION viiper_process_info = {};
+    std::wstring viiper_command = L"\"" + viiper_path + L"\" server";
+    if (!LaunchSessionProcess(console_token, startup_info, viiper_path, viiper_command, viiper_process_info)) {
+      CloseHandle(console_token);
+      CloseHandle(job_handle);
+      continue;
+    }
+
+    if (!WaitForViiperApi()) {
+      TerminateProcess(viiper_process_info.hProcess, ERROR_PROCESS_ABORTED);
+      CloseHandle(viiper_process_info.hThread);
+      CloseHandle(viiper_process_info.hProcess);
+      CloseHandle(console_token);
+      CloseHandle(job_handle);
+      continue;
+    }
+
+    PROCESS_INFORMATION process_info = {};
+    if (!LaunchSessionProcess(console_token, startup_info, apollo_path, L"", process_info)) {
+      TerminateProcess(viiper_process_info.hProcess, ERROR_PROCESS_ABORTED);
+      CloseHandle(viiper_process_info.hThread);
+      CloseHandle(viiper_process_info.hProcess);
       CloseHandle(console_token);
       CloseHandle(job_handle);
       continue;
@@ -272,22 +345,18 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
 
     bool still_running;
     do {
-      // Wait for the stop event to be set, Sunshine.exe to terminate, or the console session to change
-      const HANDLE wait_objects[] = {stop_event, process_info.hProcess, session_change_event};
+      // Wait for stop, Apollo exit, console session change, or VIIPER exit.
+      const HANDLE wait_objects[] = {stop_event, process_info.hProcess, session_change_event, viiper_process_info.hProcess};
       switch (WaitForMultipleObjects(_countof(wait_objects), wait_objects, FALSE, INFINITE)) {
         case WAIT_OBJECT_0 + 2:
           if (WTSGetActiveConsoleSessionId() == console_session_id) {
-            // The active console session didn't actually change. Let Sunshine keep running.
             still_running = true;
             continue;
           }
-          // Fall-through to terminate Sunshine.exe and start it again.
+          // Fall-through when the active console session actually changed.
         case WAIT_OBJECT_0:
-          // The service is shutting down, so try to gracefully terminate Sunshine.exe.
-          // If it doesn't terminate in 20 seconds, we will forcefully terminate it.
           if (!RunTerminationHelper(console_token, process_info.dwProcessId) ||
               WaitForSingleObject(process_info.hProcess, 20000) != WAIT_OBJECT_0) {
-            // If it won't terminate gracefully, kill it now
             TerminateProcess(process_info.hProcess, ERROR_PROCESS_ABORTED);
           }
           still_running = false;
@@ -295,41 +364,51 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
 
         case WAIT_OBJECT_0 + 1:
           {
-            // Sunshine terminated itself.
-
             DWORD exit_code;
             if (GetExitCodeProcess(process_info.hProcess, &exit_code) && exit_code == ERROR_SHUTDOWN_IN_PROGRESS) {
-              // Sunshine is asking for us to shut down, so gracefully stop ourselves.
               SetEvent(stop_event);
             }
             still_running = false;
             break;
           }
+
+        case WAIT_OBJECT_0 + 3:
+          // VIIPER exited unexpectedly. Restart both processes so Apollo can reopen the HID backend cleanly.
+          if (!RunTerminationHelper(console_token, process_info.dwProcessId) ||
+              WaitForSingleObject(process_info.hProcess, 5000) != WAIT_OBJECT_0) {
+            TerminateProcess(process_info.hProcess, ERROR_PROCESS_ABORTED);
+          }
+          still_running = false;
+          break;
+
+        default:
+          still_running = false;
+          break;
       }
     } while (still_running);
 
     CloseHandle(process_info.hThread);
     CloseHandle(process_info.hProcess);
+    CloseHandle(viiper_process_info.hThread);
+    CloseHandle(viiper_process_info.hProcess);
     CloseHandle(console_token);
+
+    // Closing the job kills any remaining process in the pair, including VIIPER.
     CloseHandle(job_handle);
   }
 
-  // Let SCM know we've stopped
   service_status.dwCurrentState = SERVICE_STOPPED;
   SetServiceStatus(service_status_handle, &service_status);
 }
 
 // This will run in a child process in the user session
 int DoGracefulTermination(DWORD pid) {
-  // Attach to Sunshine's console
   if (!AttachConsole(pid)) {
     return GetLastError();
   }
 
-  // Disable our own Ctrl-C handling
   SetConsoleCtrlHandler(nullptr, TRUE);
 
-  // Send a Ctrl-C event to Sunshine
   if (!GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)) {
     return GetLastError();
   }
@@ -343,14 +422,11 @@ int main(int argc, char *argv[]) {
     {nullptr, nullptr}
   };
 
-  // Check if this is a reinvocation of ourselves to send Ctrl-C to Sunshine.exe
   if (argc == 3 && strcmp(argv[1], "--terminate") == 0) {
     return DoGracefulTermination(atol(argv[2]));
   }
 
-  // By default, services have their current directory set to %SYSTEMROOT%\System32.
-  // We want to use the directory where Sunshine.exe is located instead of system32.
-  // This requires stripping off 2 path components: the file name and the last folder
+  // Services default to %SYSTEMROOT%\System32. Use the directory containing sunshine.exe instead.
   WCHAR module_path[MAX_PATH];
   GetModuleFileNameW(nullptr, module_path, _countof(module_path));
   for (auto i = 0; i < 2; i++) {
@@ -361,6 +437,5 @@ int main(int argc, char *argv[]) {
   }
   SetCurrentDirectoryW(module_path);
 
-  // Trigger our ServiceMain()
   return StartServiceCtrlDispatcher(service_table);
 }
