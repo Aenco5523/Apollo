@@ -44,20 +44,6 @@ jobs:
           Set-Content -Path $path -Value $patched -NoNewline
           Write-Host 'Applied CI-only workaround for ClassicOldSong/Apollo PR #1438 build regression.'
 
-      - name: Fix VIIPER bus creation request for test build
-        shell: pwsh
-        run: |
-          $path = '.\src\platform\windows\viiper_hid.cpp'
-          $text = Get-Content -Raw -Path $path
-          $old = 'api_request("bus/create", response)'
-          $new = 'api_request("bus/create 1001", response)'
-          if (-not $text.Contains($old)) {
-            throw 'Expected VIIPER bus/create request was not found.'
-          }
-          $text = $text.Replace($old, $new)
-          Set-Content -Path $path -Value $text -NoNewline
-          Write-Host 'Applied VIIPER bus/create payload fix for this test build.'
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -160,10 +146,10 @@ jobs:
             exit /b 1
           )
           start "VIIPER" "%VIIPER%" server
-          powershell -NoProfile -Command "$ok=$false; 1..30 ^| %% { try { $c=[Net.Sockets.TcpClient]::new(); $c.Connect('127.0.0.1',3242); $c.Close(); $ok=$true; break } catch { Start-Sleep -Milliseconds 200 } }; if(-not $ok){exit 1}"
+          powershell -NoProfile -Command "$ok=$false; for($i=0; $i -lt 30; $i++){ try { $c=New-Object Net.Sockets.TcpClient; $c.Connect('127.0.0.1',3242); $c.Close(); $ok=$true; break } catch { Start-Sleep -Milliseconds 200 } }; if(-not $ok){ exit 1 }"
           if errorlevel 1 (
             echo [ERROR] VIIPER API did not open on 127.0.0.1:3242.
-            echo Make sure a normally signed usbip-win2 installation is present.
+            echo Check that VIIPER started successfully and that a normally signed usbip-win2 installation is present.
             pause
             exit /b 2
           )
