@@ -14,6 +14,7 @@ on:
       - 'cmake/compile_definitions/windows.cmake'
       - 'cmake/packaging/windows.cmake'
       - 'cmake/packaging/windows_nsis.cmake'
+      - 'tools/CMakeLists.txt'
       - 'tools/sunshinesvc.cpp'
       - 'src_assets/windows/misc/viiper/**'
       - 'tools/apollo-vhid/ApolloVhidDevnode.cpp'
