@@ -4,6 +4,28 @@ install(TARGETS sunshine RUNTIME DESTINATION "." COMPONENT application)
 # Hardening: include zlib1.dll (loaded via LoadLibrary() in openssl's libcrypto.a)
 install(FILES "${ZLIB}" DESTINATION "." COMPONENT application)
 
+# VIIPER runtime used by the virtual HID keyboard/mouse backend.
+# Keep the release pinned and verify its archive before packaging.
+set(VIIPER_ARCHIVE "${CMAKE_BINARY_DIR}/viiper-windows-amd64.zip")
+set(VIIPER_EXTRACT_DIR "${CMAKE_BINARY_DIR}/viiper-runtime")
+file(DOWNLOAD
+        "https://github.com/Alia5/VIIPER/releases/download/dev-snapshot/viiper-windows-amd64.zip"
+        ${VIIPER_ARCHIVE}
+        SHOW_PROGRESS
+        EXPECTED_HASH SHA256=1fe869ab0b5e181d7a98c7d489f57ec3104add65761f13bf13d9181a8943d62e
+        TIMEOUT 60
+)
+file(REMOVE_RECURSE "${VIIPER_EXTRACT_DIR}")
+file(MAKE_DIRECTORY "${VIIPER_EXTRACT_DIR}")
+file(ARCHIVE_EXTRACT INPUT "${VIIPER_ARCHIVE}" DESTINATION "${VIIPER_EXTRACT_DIR}")
+file(GLOB_RECURSE VIIPER_EXECUTABLES "${VIIPER_EXTRACT_DIR}/viiper.exe")
+if(NOT VIIPER_EXECUTABLES)
+    message(FATAL_ERROR "Pinned VIIPER archive did not contain viiper.exe")
+endif()
+install(DIRECTORY "${VIIPER_EXTRACT_DIR}/"
+        DESTINATION "viiper"
+        COMPONENT application)
+
 # ViGEmBus installer
 set(VIGEMBUS_INSTALLER "${CMAKE_BINARY_DIR}/vigembus_installer.exe")
 file(DOWNLOAD
