@@ -18,7 +18,7 @@ include_directories(SYSTEM ${CURL_STATIC_INCLUDE_DIRS})
 link_directories(${CURL_STATIC_LIBRARY_DIRS})
 
 # miniupnpc
-add_definitions(-DMINIUPNP_STATICLIB)
+add_definitions(-DCURL_STATICLIB)
 
 # extra tools/binaries for audio/display devices
 add_subdirectory(tools)  # todo - this is temporary, only tools for Windows are needed, for now
@@ -53,6 +53,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/input.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/viiper_hid.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/viiper_hid.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_vram.cpp"
