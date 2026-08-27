@@ -20,24 +20,25 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Setup MSYS2 UCRT64
-        uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
-          path-type: inherit
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc
-
-      - name: Build RawInputProbe.exe
-        shell: msys2 {0}
+      - name: Build standalone MSVC x64 RawInputProbe.exe
+        shell: pwsh
         run: |
-          mkdir -p raw-input-probe
-          g++ -std=c++20 -O2 -municode -static-libgcc -static-libstdc++ \
-            tools/apollo-vhid/RawInputProbe.cpp \
-            -o raw-input-probe/RawInputProbe.exe \
-            -luser32
-          ls -lh raw-input-probe/RawInputProbe.exe
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path .\raw-input-probe | Out-Null
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) { throw 'vswhere.exe not found' }
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) { throw 'Visual Studio C++ x64 tools not found' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) { throw 'vcvars64.bat not found' }
+
+          $cmd = '"' + $vcvars + '" && cl /nologo /std:c++20 /EHsc /O2 /MT /DUNICODE /D_UNICODE tools\apollo-vhid\RawInputProbe.cpp /Fe:raw-input-probe\RawInputProbe.exe user32.lib && dumpbin /headers raw-input-probe\RawInputProbe.exe | findstr /i "machine"'
+          cmd.exe /d /s /c $cmd
+          if ($LASTEXITCODE -ne 0) { throw "MSVC build failed with exit code $LASTEXITCODE" }
+
+          Get-Item .\raw-input-probe\RawInputProbe.exe | Format-List Name,Length,LastWriteTime
+          Get-FileHash -Algorithm SHA256 .\raw-input-probe\RawInputProbe.exe
 
       - name: Upload Raw Input probe
         uses: actions/upload-artifact@v4
