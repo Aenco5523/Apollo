@@ -7,9 +7,11 @@
 #include <ws2tcpip.h>
 
 #include "viiper_hid.h"
+#include "src/logging.h"
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <limits>
@@ -22,6 +24,7 @@ namespace platf {
     constexpr char kHost[] = "127.0.0.1";
     constexpr unsigned short kPort = 3242;
     constexpr int kWheelDelta = 120;
+    std::atomic_uint32_t g_mouse_diag_count {0};
 
     bool send_all(SOCKET socket, const std::uint8_t *data, std::size_t size) {
       std::size_t sent = 0;
@@ -208,33 +211,49 @@ namespace platf {
   bool viiper_hid_t::open() {
     std::scoped_lock lock(impl_->mutex);
     if (impl_->open) return true;
-    if (!impl_->start_winsock_locked()) return false;
+    if (!impl_->start_winsock_locked()) {
+      BOOST_LOG(warning) << "VIIPER HID diagnostic: WSAStartup failed";
+      return false;
+    }
 
     std::string response;
     if (!api_request("ping", response) || response.find("\"server\"") == std::string::npos || response.find("VIIPER") == std::string::npos) {
+      BOOST_LOG(warning) << "VIIPER HID diagnostic: ping failed or unexpected response: " << response;
       impl_->close_locked(); return false;
     }
     response.clear();
     if (!api_request("bus/create", response) || !parse_json_integer(response, "busId", impl_->bus_id)) {
+      BOOST_LOG(warning) << "VIIPER HID diagnostic: bus/create failed: " << response;
       impl_->close_locked(); return false;
     }
     response.clear();
     if (!api_request("bus/" + std::to_string(impl_->bus_id) + "/add {\"type\":\"keyboard\"}", response) ||
         !parse_json_integer(response, "devId", impl_->keyboard_id)) {
+      BOOST_LOG(warning) << "VIIPER HID diagnostic: keyboard add failed: " << response;
       impl_->close_locked(); return false;
     }
     impl_->keyboard_socket = connect_device_stream(impl_->bus_id, impl_->keyboard_id);
-    if (impl_->keyboard_socket == INVALID_SOCKET) { impl_->close_locked(); return false; }
+    if (impl_->keyboard_socket == INVALID_SOCKET) {
+      BOOST_LOG(warning) << "VIIPER HID diagnostic: keyboard stream connect failed";
+      impl_->close_locked(); return false;
+    }
 
     response.clear();
     if (!api_request("bus/" + std::to_string(impl_->bus_id) + "/add {\"type\":\"mouse\"}", response) ||
         !parse_json_integer(response, "devId", impl_->mouse_id)) {
+      BOOST_LOG(warning) << "VIIPER HID diagnostic: mouse add failed: " << response;
       impl_->close_locked(); return false;
     }
     impl_->mouse_socket = connect_device_stream(impl_->bus_id, impl_->mouse_id);
-    if (impl_->mouse_socket == INVALID_SOCKET) { impl_->close_locked(); return false; }
+    if (impl_->mouse_socket == INVALID_SOCKET) {
+      BOOST_LOG(warning) << "VIIPER HID diagnostic: mouse stream connect failed";
+      impl_->close_locked(); return false;
+    }
 
     impl_->open = true;
+    g_mouse_diag_count.store(0);
+    BOOST_LOG(info) << "VIIPER HID diagnostic: backend open; bus=" << impl_->bus_id
+                    << " keyboard=" << impl_->keyboard_id << " mouse=" << impl_->mouse_id;
     return true;
   }
 
@@ -248,6 +267,7 @@ namespace platf {
     const bool old_state = impl_->pressed[usage];
     impl_->pressed[usage] = !release;
     if (!impl_->send_keyboard_locked()) {
+      BOOST_LOG(warning) << "VIIPER HID diagnostic: keyboard stream send failed; closing backend";
       impl_->pressed[usage] = old_state;
       impl_->close_locked();
       return false;
@@ -257,11 +277,23 @@ namespace platf {
 
   bool viiper_hid_t::move_mouse(int delta_x, int delta_y) {
     std::scoped_lock lock(impl_->mutex);
-    if (!impl_->open) return false;
+    if (!impl_->open) {
+      BOOST_LOG(warning) << "VIIPER HID diagnostic: move_mouse called while backend is closed";
+      return false;
+    }
+
+    const auto diag_index = g_mouse_diag_count.fetch_add(1);
+    if (diag_index < 20) {
+      BOOST_LOG(info) << "VIIPER HID diagnostic: mouse input #" << (diag_index + 1)
+                      << " dx=" << delta_x << " dy=" << delta_y;
+    }
+
     while (delta_x != 0 || delta_y != 0) {
       const int x = std::clamp(delta_x, static_cast<int>(std::numeric_limits<std::int16_t>::min()), static_cast<int>(std::numeric_limits<std::int16_t>::max()));
       const int y = std::clamp(delta_y, static_cast<int>(std::numeric_limits<std::int16_t>::min()), static_cast<int>(std::numeric_limits<std::int16_t>::max()));
       if (!impl_->send_mouse_locked(static_cast<std::int16_t>(x), static_cast<std::int16_t>(y), 0, 0)) {
+        BOOST_LOG(warning) << "VIIPER HID diagnostic: mouse stream send failed at dx=" << x << " dy=" << y
+                           << "; closing backend and allowing Apollo fallback";
         impl_->close_locked(); return false;
       }
       delta_x -= x;
@@ -286,6 +318,7 @@ namespace platf {
     if (release) impl_->buttons &= static_cast<std::uint8_t>(~(1u << bit));
     else impl_->buttons |= static_cast<std::uint8_t>(1u << bit);
     if (!impl_->send_mouse_locked(0, 0, 0, 0)) {
+      BOOST_LOG(warning) << "VIIPER HID diagnostic: mouse button stream send failed; closing backend";
       impl_->buttons = old_buttons;
       impl_->close_locked();
       return false;
@@ -303,6 +336,7 @@ namespace platf {
     while (ticks != 0) {
       const int chunk = std::clamp(ticks, static_cast<int>(std::numeric_limits<std::int16_t>::min()), static_cast<int>(std::numeric_limits<std::int16_t>::max()));
       if (!impl_->send_mouse_locked(0, 0, horizontal ? 0 : static_cast<std::int16_t>(chunk), horizontal ? static_cast<std::int16_t>(chunk) : 0)) {
+        BOOST_LOG(warning) << "VIIPER HID diagnostic: mouse wheel stream send failed; closing backend";
         impl_->close_locked(); return false;
       }
       ticks -= chunk;
