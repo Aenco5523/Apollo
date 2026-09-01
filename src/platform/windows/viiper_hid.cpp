@@ -114,6 +114,15 @@ namespace platf {
     SOCKET connect_device_stream(int bus_id, int device_id) {
       SOCKET socket = connect_localhost();
       if (socket == INVALID_SOCKET) return INVALID_SOCKET;
+
+      // Match VIIPER's official clients: input reports are latency-sensitive tiny writes,
+      // so disable Nagle aggregation on the long-lived keyboard/mouse streams.
+      const int no_delay = 1;
+      if (::setsockopt(socket, IPPROTO_TCP, TCP_NODELAY,
+                       reinterpret_cast<const char *>(&no_delay), sizeof(no_delay)) == SOCKET_ERROR) {
+        BOOST_LOG(warning) << "VIIPER HID: failed to enable TCP_NODELAY on device stream; WSA=" << ::WSAGetLastError();
+      }
+
       const std::string handshake = "bus/" + std::to_string(bus_id) + "/" + std::to_string(device_id);
       if (!send_all(socket, handshake, true)) {
         ::closesocket(socket);
