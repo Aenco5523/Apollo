@@ -273,8 +273,18 @@ namespace platf {
     if (usage == 0) return false;
     std::scoped_lock lock(impl_->mutex);
     if (!impl_->open) return false;
+
     const bool old_state = impl_->pressed[usage];
-    impl_->pressed[usage] = !release;
+    const bool new_state = !release;
+
+    // Apollo's software repeat is useful for synthetic SendInput, but a real HID keyboard
+    // keeps its key state in the report and Windows handles typematic. Swallow repeated
+    // same-state key-downs so software repeat cannot become duplicate HID input.
+    if (old_state == new_state) {
+      return true;
+    }
+
+    impl_->pressed[usage] = new_state;
     if (!impl_->send_keyboard_locked()) {
       BOOST_LOG(warning) << "VIIPER HID diagnostic: keyboard stream send failed; closing backend";
       impl_->pressed[usage] = old_state;
@@ -323,9 +333,19 @@ namespace platf {
     }
     std::scoped_lock lock(impl_->mutex);
     if (!impl_->open) return false;
+
     const auto old_buttons = impl_->buttons;
-    if (release) impl_->buttons &= static_cast<std::uint8_t>(~(1u << bit));
-    else impl_->buttons |= static_cast<std::uint8_t>(1u << bit);
+    auto new_buttons = old_buttons;
+    if (release) new_buttons &= static_cast<std::uint8_t>(~(1u << bit));
+    else new_buttons |= static_cast<std::uint8_t>(1u << bit);
+
+    // Keep the HID backend idempotent even if an upstream client sends a duplicate
+    // same-state button packet.
+    if (new_buttons == old_buttons) {
+      return true;
+    }
+
+    impl_->buttons = new_buttons;
     if (!impl_->send_mouse_locked(0, 0, 0, 0)) {
       BOOST_LOG(warning) << "VIIPER HID diagnostic: mouse button stream send failed; closing backend";
       impl_->buttons = old_buttons;
